@@ -2,6 +2,8 @@
 
 A Linux app made specifically for the **Logitech G515 TKL**. Paint and save per-key lighting profiles, adjust brightness, and use the top row as a countdown timer. The preview uses a Nordic ISO layout. Other keyboards may work, but are not the focus of this app.
 
+![Keyboard Lights screenshot](klsc.png)
+
 ## Install
 
 On Ubuntu or Debian, install the dependencies, then clone and install the app:
