@@ -1,0 +1,4 @@
+__pycache__/
+*.py[cod]
+vendor/g810-led/bin/
+vendor/g810-led/lib/
