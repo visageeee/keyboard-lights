@@ -11,7 +11,7 @@ import background_keeper
 
 APP_FILES = ('main.py', 'controller.py', 'model.py', 'profile_store.py',
              'background_keeper.py', 'background_service.py', 'g515_activity.py',
-             'timer.py', 'timer_store.py')
+             'timer.py', 'timer_store.py', 'timer_chime.py', 'g515_onboard.py', 'workspace_indicator.py')
 MARKER = '# Installed by Keyboard Lights\n'
 SOURCE = Path(__file__).resolve().parent
 
@@ -47,6 +47,8 @@ def install():
     (destination / '.keyboard-lights-install').write_text('Keyboard Lights user installation\n', encoding='utf-8')
     for name in APP_FILES:
         shutil.copy2(SOURCE / name, destination / name)
+    shutil.copy2(SOURCE / 'chime.ogg', destination / 'chime.ogg')
+    shutil.copy2(SOURCE / 'LICENSE-logirgb', destination / 'LICENSE-logirgb')
     bundled_bin = destination / 'vendor/g810-led/bin'
     bundled_bin.mkdir(parents=True, exist_ok=True)
     shutil.copy2(SOURCE / 'vendor/g810-led/bin/g810-led', bundled_bin / 'g810-led')

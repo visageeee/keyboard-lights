@@ -32,8 +32,10 @@ def activity_report(packet, feature):
 
 class G515ActivityMonitor:
     """Watch the vendor HID++ interface for idle-to-active transitions."""
-    def __init__(self, device, on_activity, on_error):
+    def __init__(self, device, on_activity, on_error, on_idle=None, idle_seconds=None):
         self.device, self.on_activity, self.on_error = device, on_activity, on_error
+        self.on_idle, self.idle_seconds = on_idle, idle_seconds
+        self.ignore_idle_until = time.monotonic() + 2
         self.stopping = threading.Event()
         self.rearm = threading.Event()
         self.thread = None
@@ -56,6 +58,11 @@ class G515ActivityMonitor:
     def _handle(self, packet):
         if self.feature is not None and activity_report(packet, self.feature):
             self.on_activity()
+        elif (self.on_idle and self.feature is not None and len(packet) >= 5 and
+              packet[0] in (0x10, 0x11) and packet[1] == 0xff and
+              packet[2] == self.feature and packet[3] == 0x10 and packet[4] == 0 and
+              time.monotonic() >= self.ignore_idle_until):
+            self.on_idle()
 
     def _request(self, feature, function, params):
         if self.stopping.is_set():
@@ -89,7 +96,16 @@ class G515ActivityMonitor:
         current = self._request(self.feature, 5, [0, 0, 0])
         if len(current) < 3:
             raise ActivityError('Incomplete G515 control response')
-        flags = current[2] | 0x02  # user-activity events; preserve existing flags
+        if self.on_idle and self.idle_seconds is not None:
+            timing = self._request(self.feature, 7, [0])
+            if len(timing) < 7:
+                raise ActivityError('Incomplete G515 idle timeout response')
+            requested = [1, *timing[1:3], self.idle_seconds >> 8, self.idle_seconds & 255, *timing[5:7]]
+            if list(timing[3:5]) != requested[3:5]:
+                response = self._request(self.feature, 7, requested)
+                if len(response) < 7 or list(response[:7]) != requested:
+                    raise ActivityError('G515 did not confirm the idle timeout')
+        flags = current[2] | (0x06 if self.on_idle else 0x02)
         if flags != current[2]:
             response = self._request(self.feature, 5, [1, current[1], flags])
             if len(response) < 3 or response[:3] != bytes([1, current[1], flags]):

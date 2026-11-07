@@ -32,6 +32,8 @@ class InstallTests(unittest.TestCase):
         self.assertIn('StartupWMClass=keyboard-lights', desktop)
         self.assertIn('Icon=keyboard-lights', desktop)
         self.assertTrue((self.root / 'data/icons/hicolor/scalable/apps/keyboard-lights.svg').exists())
+        self.assertEqual((self.root / 'data/keyboard-lights/chime.ogg').read_bytes(),
+                         (install.SOURCE / 'chime.ogg').read_bytes())
         command = self.root / 'bin/keyboard-lights-timer'
         result = subprocess.run([str(command), '--help'], text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)

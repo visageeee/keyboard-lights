@@ -101,7 +101,7 @@ def start_service(executable, device, profile, seconds):
                     current_version = (directory / 'keeper.version').read_text(encoding='utf-8')
                 except OSError:
                     current_version = ''
-                if current_version == '3':
+                if current_version == '7':
                     # The active helper understands timer files already.
                     start(executable, device, profile, seconds)
                     return

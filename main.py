@@ -6,6 +6,9 @@ import sys
 import time
 
 import timer_store
+import g515_onboard
+import workspace_indicator
+from g515_activity import ActivityError
 
 import cairo
 import gi
@@ -307,11 +310,29 @@ class LightingWindow(Gtk.Window):
         outer.pack_start(bottom, False, False, 0)
         self.apply_button = self.button('Apply to keyboard', self.apply_profile)
         self.apply_button.set_name('primary')
+        self.onboard_button = self.button('Save default color…', self.save_onboard_color)
+        bottom.pack_start(self.onboard_button, False, False, 0)
         bottom.pack_end(self.apply_button, False, False, 0)
         self.keepalive_toggle = Gtk.CheckButton(label='Keep applied lighting active after closing (start at login)')
         self.keepalive_toggle.set_active(background_keeper.enabled())
         self.keepalive_toggle.connect('toggled', self.keepalive_changed)
         outer.pack_start(self.keepalive_toggle, False, False, 0)
+        workspace_row = Gtk.Box(spacing=8)
+        workspace_enabled, workspace_color = workspace_indicator.load()
+        self.workspace_toggle = Gtk.CheckButton(label='Show workspace on F1–F12')
+        self.workspace_toggle.set_active(workspace_enabled)
+        self.workspace_toggle.set_tooltip_text('Uses the active X11 workspace; requires background lighting.')
+        workspace_row.pack_start(self.workspace_toggle, False, False, 0)
+        self.workspace_color = Gtk.ColorButton()
+        workspace_rgba = Gdk.RGBA()
+        workspace_rgba.parse('#' + workspace_color)
+        self.workspace_color.set_rgba(workspace_rgba)
+        self.workspace_color.set_title('Workspace indicator color')
+        workspace_row.pack_start(self.workspace_color, False, False, 0)
+        workspace_row.pack_start(Gtk.Label(label='Indicator color', xalign=0), False, False, 0)
+        self.workspace_toggle.connect('toggled', self.workspace_changed)
+        self.workspace_color.connect('color-set', self.workspace_changed)
+        outer.pack_start(workspace_row, False, False, 0)
         self.status = Gtk.Label(label='Looking for keyboards…', xalign=0)
         self.status.set_name('status')
         self.status.set_ellipsize(Pango.EllipsizeMode.END)
@@ -335,6 +356,16 @@ class LightingWindow(Gtk.Window):
     def update_controls(self):
         if hasattr(self, 'apply_button'):
             self.apply_button.set_sensitive(not self.busy and 0 <= self.device_combo.get_active() < len(self.devices))
+        if hasattr(self, 'onboard_button'):
+            index = self.device_combo.get_active()
+            device = self.devices[index] if 0 <= index < len(self.devices) else None
+            self.onboard_button.set_sensitive(not self.busy and device is not None and
+                                              (device.vendor.lower(), device.product.lower()) == ('046d', 'c358'))
+        if hasattr(self, 'keepalive_toggle'):
+            self.keepalive_toggle.set_sensitive(not self.busy)
+        if hasattr(self, 'workspace_toggle'):
+            self.workspace_toggle.set_sensitive(not self.busy)
+            self.workspace_color.set_sensitive(not self.busy)
         self.refresh_button.set_sensitive(not self.busy)
         if hasattr(self, 'path_entry'):
             self.path_entry.set_sensitive(not self.busy)
@@ -414,6 +445,8 @@ class LightingWindow(Gtk.Window):
             self.set_status('Lighting applied. Background lighting will also start at login.')
 
     def keepalive_changed(self, toggle):
+        if getattr(self, '_updating_keepalive', False):
+            return
         if toggle.get_active():
             self.enable_background_keeper()
         else:
@@ -424,6 +457,29 @@ class LightingWindow(Gtk.Window):
                 self.set_status(f'Could not turn off background lighting: {error}', error=True)
             else:
                 self.set_status('Background lighting turned off.')
+
+    def workspace_changed(self, *_):
+        rgba = self.workspace_color.get_rgba()
+        color = ''.join(f'{round(max(0, min(1, value)) * 255):02x}'
+                        for value in (rgba.red, rgba.green, rgba.blue))
+        active = self.workspace_toggle.get_active()
+        try:
+            workspace_indicator.save(active, color)
+        except (OSError, ValueError) as error:
+            self.set_status(f'Could not save workspace indicator: {error}', error=True)
+            return
+        if active and not workspace_indicator.supported_session():
+            self.set_status('The workspace indicator currently requires an X11 session.', error=True)
+            return
+        if background_keeper.load() is None:
+            self.set_status('Apply a design with background lighting enabled to show the workspace.')
+            return
+        if timer_store.load():
+            self.set_status('Workspace setting saved. It takes effect after restarting the helper.')
+            return
+        self.set_status('Updating workspace indicator…')
+        self.run_task(background_keeper.restart_helper,
+                      lambda _result: self.set_status('Workspace indicator updated.'))
 
     def refresh_applied_lighting(self):
         if self.closed or self.applied_lighting is None or not self.keepalive_toggle.get_active():
@@ -573,6 +629,78 @@ class LightingWindow(Gtk.Window):
         else:
             self.timer_label.set_text('')
         return True
+
+    def save_onboard_color(self, *_):
+        index = self.device_combo.get_active()
+        if self.busy or not 0 <= index < len(self.devices):
+            return
+        device = self.devices[index]
+        if (device.vendor.lower(), device.product.lower()) != ('046d', 'c358'):
+            self.set_status('Default color is supported only on the wired G515 TKL.', error=True)
+            return
+        if timer_store.load():
+            self.set_status('Cancel the timer before saving the default color.', error=True)
+            return
+        color = self.paint_color()
+        brightness = self.profile.brightness
+        color = ''.join(f'{(int(color[i:i+2], 16) * brightness + 50) // 100:02x}' for i in (0, 2, 4))
+        dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.WARNING,
+                                   buttons=Gtk.ButtonsType.NONE, text='Save a default keyboard color?')
+        dialog.format_secondary_text(
+            'This writes the selected paint color and brightness as a solid color to the wired G515. '
+            'Per-key designs cannot be stored this way. The existing onboard profile will be backed up. '
+            'The background helper will restore your per-key design when the keyboard wakes. '
+            'Close other lighting apps first.')
+        idle_row = Gtk.Box(spacing=8)
+        idle_row.set_margin_start(12)
+        idle_row.set_margin_end(12)
+        idle_row.set_margin_bottom(12)
+        idle_off = Gtk.CheckButton(label='Turn off backlight after idle')
+        idle_off.set_active(True)
+        idle_seconds = Gtk.SpinButton.new_with_range(3, 65534, 1)
+        idle_seconds.set_value(60)
+        idle_off.connect('toggled', lambda toggle: idle_seconds.set_sensitive(toggle.get_active()))
+        idle_row.pack_start(idle_off, False, False, 0)
+        idle_row.pack_start(idle_seconds, False, False, 0)
+        idle_row.pack_start(Gtk.Label(label='seconds'), False, False, 0)
+        dialog.get_content_area().pack_start(idle_row, False, False, 0)
+        dialog.add_buttons('Cancel', Gtk.ResponseType.CANCEL, 'Save color', Gtk.ResponseType.OK)
+        dialog.show_all()
+        try:
+            confirmed = dialog.run() == Gtk.ResponseType.OK
+            idle_off_after = int(idle_seconds.get_value()) if idle_off.get_active() else None
+        finally:
+            dialog.destroy()
+        if not confirmed:
+            return
+        previous = self.applied_lighting or background_keeper.load(include_disabled=True)
+        if previous is None or previous[1] != device:
+            previous = (self.path_entry.get_text().strip(), device,
+                        LightingProfile(dict(self.profile.colors), self.profile.brightness))
+        restart_keeper = idle_off_after is not None or self.keepalive_toggle.get_active()
+        self.stop_keepalive()
+        self.keepalive_toggle.set_active(False)
+        self.set_status('Backing up and saving the keyboard profile…')
+        def work():
+            try:
+                background_keeper.disable()
+                backup = g515_onboard.save_solid(device, color, idle_off_after=idle_off_after)
+                if restart_keeper:
+                    background_keeper.enable(*previous, idle_off_after=idle_off_after)
+                return backup
+            except (g515_onboard.OnboardError, ActivityError) as error:
+                raise ControllerError(str(error)) from error
+        def done(backup):
+            self.applied_lighting = previous if restart_keeper else None
+            if restart_keeper:
+                self._updating_keepalive = True
+                try:
+                    self.keepalive_toggle.set_active(True)
+                finally:
+                    self._updating_keepalive = False
+            self.set_status(f'Default color saved; custom lighting restores on wake. Backup: {backup}'
+                            if restart_keeper else f'Default color saved. Backup: {backup}')
+        self.run_task(work, done)
 
     def apply_profile(self, *_):
         if timer_store.load():
